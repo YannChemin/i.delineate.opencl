@@ -440,8 +440,9 @@ static void edge_mapping(const struct region *rg, const int *tile, int bx,
                  rc > p->merge_asymetric_relative_area_threshold) ||
                 (inter > p->merge_asymetric_pixel_area_threshold &&
                  rn > p->merge_asymetric_relative_area_threshold);
-        G_debug(4, "edge %u %u inter=%ld ac=%ld an=%ld lc=%ld ln=%ld iou=%.4f "
-                   "c0=%d c1=%d",
+        G_debug(4,
+                "Edge %u %u: inter=%ld ac=%ld an=%ld lc=%ld ln=%ld iou=%.4f "
+                "c0=%d c1=%d",
                 kc, kn, inter, ac, an, lc, ln, iou, case0, case1);
         if (case0 && case1)
             uf_union(s->parent, (int)kn, (int)kc);
@@ -601,10 +602,9 @@ static void process_tile(struct region *rg, struct ids *s,
     }
 #undef FIELD_CELLS
 
-    if (G_verbose() >= 0 && k)
-        for (j = 0; j < k; j++)
-            G_debug(4, "tile %d,%d field %d id %d area %ld write %d", bx, by,
-                    j, base + 2 * j, f[j].area, write_id[j]);
+    for (j = 0; j < k; j++)
+        G_debug(4, "Tile %d,%d: field %d, area %ld, written as %d", bx, by,
+                base + 2 * j, f[j].area, write_id[j]);
 
     /* The merging edge of the tile. */
     e = p->merging_edge_width;

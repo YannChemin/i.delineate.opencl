@@ -50,7 +50,10 @@ def session(tmp_path_factory):
     with gs.setup.init(project, env=os.environ.copy()) as session:
         tools = Tools(session=session)
         tools.g_region(
-            n=5100000 + SIZE * RES, s=5100000, e=220000 + SIZE * RES, w=220000,
+            n=5100000 + SIZE * RES,
+            s=5100000,
+            e=220000 + SIZE * RES,
+            w=220000,
             res=RES,
         )
         tools.r_mapcalc(expression="noise = rand(0, 12)", seed=1)
