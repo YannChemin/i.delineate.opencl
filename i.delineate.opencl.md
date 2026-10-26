@@ -160,10 +160,13 @@ device sharing host memory.
 numbers, read and written with the core OpenCL `vload_half` and
 `vstore_half` functions (no half-precision extension is needed); the
 arithmetic stays in single precision. It halves the memory traffic of a
-bandwidth-bound GPU. **precision**=*auto* uses fp16 on GPU profiles, as
-Delineate-Anything runs its model in half precision on GPUs, and fp32
-on *cpu*. On the sample tiles, fp16 moves boxes by less than 0.2 pixel
-and mask areas by less than 3 %.
+bandwidth-bound GPU, and is not available with *cpu*.
+**precision**=*auto* uses fp32. fp16 moves boxes by less than 0.2 pixel
+and scores by about 0.005, which is enough to tip detections lying at
+the **confidence** threshold: on the Sentinel-2 sample, it gives 147
+fields instead of 141, 130 of them matching the fp32 result with an
+intersection over union above 0.95. Delineate-Anything itself runs in
+half precision on GPUs, with the same effect.
 
 ### Memory
 
@@ -202,7 +205,11 @@ error below 3e-4).
 On a laptop Core i7-1165G7 (PoCL, *cpu* profile with OpenBLAS), the whole
 sample takes 26 s with the small model, against about 4 minutes for the
 reference implementation; the 768 x 768 crop takes 100 s with large_v2,
-against 5 minutes 14 s.
+against 5 minutes 14 s. On the same laptop's Intel Iris Xe GPU
+(*igpu* profile), the sample takes 46 s of delineation: the GEMM kernel
+reaches only about 10 GFLOP/s there, so **device**=*cpu* is the faster
+choice on such machines (`I_DELINEATE_OPENCL_PROFILE=1` shows the rate
+reached on a given device).
 
 Differences from the reference implementation:
 
@@ -210,8 +217,8 @@ Differences from the reference implementation:
   polygons cut by its processing regions and worker blocks is not
   needed. Small holes are filled and fields filtered on the raster, in a
   topological map where polygons cannot overlap.
-- The network runs in fp32 on CPUs and, by default, with fp16 storage on
-  GPUs (the reference uses fp16 on GPUs).
+- The network runs in fp32 by default, on GPUs as well (the reference
+  uses fp16 on GPUs).
 - Merging tiles is done in the reference's tile order on one thread, so
   the result does not depend on the scheduling of parallel workers.
 - The additional background vector source and multi-model passes of the

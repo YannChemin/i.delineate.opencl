@@ -459,8 +459,9 @@ int main(int argc, char *argv[])
     opt.precision->answer = "auto";
     opt.precision->label = _("Storage precision of the activations");
     opt.precision->description =
-        _("auto: fp16 on GPU profiles (as Delineate-Anything runs on GPUs), "
-          "fp32 on cpu; arithmetic is always fp32");
+        _("auto: fp32; fp16 halves the activation memory and traffic on "
+          "GPU profiles but can change detections near the confidence "
+          "threshold; arithmetic is always fp32");
     opt.precision->guisection = _("Processing");
 
     flag.offline = G_define_flag();

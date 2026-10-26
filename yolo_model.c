@@ -121,11 +121,9 @@ const char *yolo_device_opts(struct ocl_backend *ocl, void *data)
                           ocl->device_name);
     }
 
-    if (!st->precision_opt || strcmp(st->precision_opt, "auto") == 0)
-        /* Delineate-Anything runs fp16 on GPUs, fp32 on CPUs. */
-        st->half = st->profile != YP_CPU;
-    else
-        st->half = strcmp(st->precision_opt, "fp16") == 0;
+    /* fp16 storage tips detections lying at the confidence threshold and
+     * was not faster on the GPUs measured, so it is only used on request. */
+    st->half = st->precision_opt && strcmp(st->precision_opt, "fp16") == 0;
 #ifdef HAVE_BLAS
     if (st->half && st->profile == YP_CPU)
         G_fatal_error(_("precision=fp16 is not available with profile=cpu "
