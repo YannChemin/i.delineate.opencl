@@ -1,0 +1,269 @@
+<h2>DESCRIPTION</h2>
+<p><em>i.delineate.opencl</em> delineates agricultural fields in a 3-band imagery
+group with Delineate-Anything, a resolution-agnostic field boundary
+model (Lavreniuk et al. 2025), and writes them as a vector area map. The
+network, an Ultralytics YOLO11 instance segmentation model, runs on an
+OpenCL device (GPU or CPU) with its weights read directly from the
+published PyTorch file: neither Python nor PyTorch is needed at run
+time. The detected field masks are then composed, merged across tiles
+and filtered as the reference implementation's <em>main</em> method does, and
+vectorized into a topologically clean map.</p>
+<p>The <strong>group</strong> (or its <strong>subgroup</strong>) must contain exactly three raster
+maps, used as the red, green and blue channels in the order they are
+listed in the group (see <em>i.group</em>). Integer maps within 0-255 are used
+as they are; other maps are stretched linearly between the lower and
+upper <strong>percentile</strong> of their positive values to the 0-255 range the
+model was trained on. Cells that are NULL in any band, or 0 in all three
+(black, the reference's no-data value), hold no field. Processing is
+done in the current computational region.</p>
+<h3>Weights</h3>
+<p>The three models published by the authors are supported; the network
+is built from the model description stored in the file, so the model is
+recognised by its content:</p>
+<table>
+<thead>
+<tr class="header">
+<th><strong>model</strong></th>
+<th>File</th>
+<th>Network</th>
+<th>Size</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>large_v2 (best quality)</td>
+<td><a href="https://huggingface.co/MykolaL/DelineateAnything/resolve/main/DelineateAnythingv2.pt">DelineateAnythingv2.pt</a></td>
+<td>YOLO11x-seg</td>
+<td>125 MB</td>
+</tr>
+<tr class="even">
+<td>large</td>
+<td><a href="https://huggingface.co/MykolaL/DelineateAnything/resolve/main/DelineateAnything.pt">DelineateAnything.pt</a></td>
+<td>YOLO11x-seg</td>
+<td>125 MB</td>
+</tr>
+<tr class="odd">
+<td>small (fastest)</td>
+<td><a href="https://huggingface.co/MykolaL/DelineateAnything/resolve/main/DelineateAnything-S.pt">DelineateAnything-S.pt</a></td>
+<td>YOLO11n-seg</td>
+<td>18 MB</td>
+</tr>
+</tbody>
+</table>
+<p>Without a <strong>checkpoint</strong> file, the module looks for the published file
+names in the weights folder: <strong>weights_dir</strong>, by default
+<code>$DELINEATE_MODELS_DIR</code>, or <code>~/models/delineate</code> when that environment
+variable is not set. The best model present is used (large_v2, then
+large, then small), or the one chosen with <strong>model</strong>. A missing model is
+downloaded into that folder on first use (large_v2 when the folder holds
+none); the download is checked against the published size, resumes
+where an interrupted one stopped, and waits for another run downloading
+the same file. The <strong>-n</strong> flag forbids downloading.</p>
+<p>The pickled model is read without running any of its code: classes are
+never imported, objects only become records of their class name and
+attributes.</p>
+<h3>Delineation</h3>
+<p>The model sees 512 x 512 pixel tiles. Imagery with cells of 4 m or more
+is upsampled twice with OpenCV's bicubic kernel first (<strong>scale</strong>=<em>auto</em>;
+1, 2 or 4 can be forced), so that a tile covers 256 x 256 region cells
+of 10 m Sentinel-2 imagery; the fields are then delineated at half the
+region resolution. Tiles overlap: they are placed every <strong>tile_step</strong>
+times their size (half a tile by default) in the reference's order.</p>
+<p>Each tile is run through the network. Detections above the
+<strong>confidence</strong> threshold go through Ultralytics' non-maximum suppression
+(IoU 0.7, at most 300) and their masks are built at full tile
+resolution from the mask prototypes, then opened and closed with a
+3 x 3 square. Of each mask, the largest outer contour is kept, filled,
+and cut by the clip classes of the land cover <strong>mask</strong>. Detections
+smaller than <strong>min_pixels</strong> tile cells, or lying for less than
+<strong>valid_fraction</strong> of their area in valid data (at least 2 cells away
+from no data) outside the filter classes, are dropped. Overlapping
+detections of a tile are merged when their overlap (IoU) exceeds 0.8,
+the larger ones placed first. Where tiles overlap, the smaller field
+wins each cell, and fields of neighbouring tiles are merged into one
+when they overlap enough (IoU above <strong>merge_iou</strong>, or within the 4-cell
+edge band of a tile with an IoU above 0.6 or more than 192 cells in
+common, and covering enough of each other). Finally the borders between
+fields are cleared and the gaps filled from the neighbouring fields
+(Delineate-Anything's identity opening), which leaves a thin line
+between adjacent fields.</p>
+<p>These steps and their defaults are those of the reference
+implementation (<code>methods/main</code> with <code>conf_sample.yaml</code>).</p>
+<h3>Land cover mask</h3>
+<p>An optional land cover <strong>mask</strong> (integer classes) refines the fields:
+cells of the <strong>clip_classes</strong> (e.g. water, forest) are cut out of the
+fields; a detection lying for more than 1 - <strong>valid_fraction</strong> of its
+area in the <strong>filter_classes</strong> (e.g. built-up land) is dropped; and
+cells of the <strong>background_classes</strong> where no field was found become
+background areas, kept when larger than <strong>background_min_area</strong> with
+their holes smaller than <strong>background_min_hole</strong> filled. NULL mask cells
+belong to no class. The mask is read at the region resolution (nearest
+neighbour).</p>
+<h3>Filtering and vectorization</h3>
+<p>Holes in a field smaller than <strong>min_hole</strong> square meters are filled,
+then fields smaller than <strong>min_area</strong> square meters are dropped. Both
+thresholds are given for 10 m cells and scaled by the cell area divided
+by 100 m² unless the <strong>-u</strong> flag is set (2500 m² for 10 m cells, 625 m²
+for 5 m cells). Areas are computed from the cells, on the ellipsoid in
+latitude-longitude projects. A small field lying in a filled hole is
+absorbed; a field large enough to be kept stays an island.</p>
+<p>Boundaries are traced along cell edges into shared topological
+boundaries and simplified with the Douglas-Peucker algorithm with the
+<strong>simplify</strong> tolerance, by default twice the cell diagonal of the region
+(28 m for 10 m cells), the tolerance of the reference's simplification
+step; 0 keeps the raster staircase. Junctions between fields are kept,
+so neighbouring fields stay adjacent. The topology is then cleaned and
+each field gets one centroid, placed at the cell farthest from its
+border. The optional <strong>raster</strong> output holds the field categories before
+simplification, at the delineation resolution.</p>
+<h3>Attribute table</h3>
+<table>
+<thead>
+<tr class="header">
+<th>Column</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>cat</td>
+<td>Field category</td>
+</tr>
+<tr class="even">
+<td>background</td>
+<td>1 for a background area from the land cover mask, else 0</td>
+</tr>
+<tr class="odd">
+<td>class</td>
+<td>Land cover class of a background area, else 0</td>
+</tr>
+<tr class="even">
+<td>area</td>
+<td>Area before simplification, in square meters</td>
+</tr>
+</tbody>
+</table>
+<h3>OpenCL device</h3>
+<p>With <strong>device</strong>=<em>auto</em>, the first GPU is used, else the first CPU
+device. When several OpenCL platforms expose the same device, the first
+platform on which the kernels compile is used; <strong>platform</strong> restricts
+the choice to platforms whose name contains the given text. Mesa's
+rusticl only exposes a GPU when enabled in the environment, e.g.
+<code>RUSTICL_ENABLE=radeonsi</code>.</p>
+<h3>Device profile and precision</h3>
+<p>The <strong>profile</strong> adapts the run to the device:</p>
+<ul>
+<li><em>cpu</em>: a CPU device such as PoCL. The whole network runs on the host
+over the mapped device buffers (no copy): convolutions as BLAS matrix
+products split into cache-sized blocks over the OpenMP threads, the
+other layers as OpenMP loops. PoCL runs the GPU-shaped kernels about
+ten times slower. Without a BLAS library at build time the OpenCL
+kernels are used.</li>
+<li><em>igpu</em>: a GPU sharing host memory (integrated graphics, APU). The
+input and the network outputs live in host-visible memory and are
+written and read by mapping them (zero copy); the host prepares the
+next batch of tiles while the device runs the current one.</li>
+<li><em>dgpu</em>: a GPU with its own memory on internal PCI Express. Tiles are
+uploaded from pinned host memory without blocking, and two batches
+are in flight.</li>
+<li><em>egpu</em>: a GPU behind a slow link (Thunderbolt or USB4 enclosure,
+PoCL-Remote). As <em>dgpu</em>, with uploads and downloads on their own
+command queue so that they overlap the computation. The weights and
+activations stay on the device for the whole run.</li>
+</ul>
+<p>With <strong>profile</strong>=<em>auto</em>, the profile is detected: <em>cpu</em> for a CPU
+device, <em>igpu</em> for a GPU reporting unified memory, <em>egpu</em> for a remote
+device or a GPU whose narrowest PCI Express link to the host carries
+less than 6 GB/s (read from the driver's PCI address and Linux sysfs),
+<em>dgpu</em> otherwise. The chosen profile and the reason are printed with
+<strong>--verbose</strong>. A profile can be forced to compare them; <em>igpu</em> needs a
+device sharing host memory.</p>
+<p><strong>precision</strong>=<em>fp16</em> stores the activations as IEEE half-precision
+numbers, read and written with the core OpenCL <code>vload_half</code> and
+<code>vstore_half</code> functions (no half-precision extension is needed); the
+arithmetic stays in single precision. It halves the memory traffic of a
+bandwidth-bound GPU. <strong>precision</strong>=<em>auto</em> uses fp16 on GPU profiles, as
+Delineate-Anything runs its model in half precision on GPUs, and fp32
+on <em>cpu</em>. On the sample tiles, fp16 moves boxes by less than 0.2 pixel
+and mask areas by less than 3 %.</p>
+<h3>Memory</h3>
+<p>The fields are delineated over the whole region at once: the module
+needs about 12 bytes per output cell (an identity and a weight per cell,
+then the vectorization), plus 9 bytes per region cell for the imagery
+and masks. A Sentinel-2 tile of 10980 x 10980 cells, delineated at 5 m,
+needs about 6 GiB. Split larger areas with <em>g.region</em>. On the device,
+the large models need about 1.2 GiB of activations for the default
+<strong>batch</strong> of 4 tiles in fp32.</p>
+<h3>Debugging aids</h3>
+<p><code>I_DELINEATE_OPENCL_PROFILE=1</code> prints, per kernel (or host operation),
+the calls, the time, and the achieved GFLOP/s and GB/s, which shows
+whether it is limited by compute or by memory bandwidth; each kernel is
+timed alone with the wall clock, which also works where driver event
+times are wrong. When <code>I_DELINEATE_OPENCL_DUMP</code> names a directory, the
+input and the output of every layer of the first tile, and every
+detection, are written there for comparison with the PyTorch reference.
+<code>I_DELINEATE_OPENCL_DOWNLOAD_URL</code> replaces the download location
+(<code>https://huggingface.co/MykolaL/DelineateAnything/resolve/main</code>), for a
+local mirror.</p>
+<h2>NOTES</h2>
+<p>The port reproduces the reference results: on the Sentinel-2 sample
+shipped with Delineate-Anything (1572 x 1540 cells at 10 m, small
+model), it finds the same 141 fields, every one matching its reference
+polygon with an intersection over union above 0.9 (median 0.9998)
+before simplification. With the large_v2 model on a 768 x 768 cell
+crop, all 111 fields match (intersection over union above 0.95, median
+1.0). The network outputs match PyTorch to single precision (relative
+error below 3e-4).</p>
+<p>On a laptop Core i7-1165G7 (PoCL, <em>cpu</em> profile with OpenBLAS), the whole
+sample takes 26 s with the small model, against about 4 minutes for the
+reference implementation; the 768 x 768 crop takes 100 s with large_v2,
+against 5 minutes 14 s.</p>
+<p>Differences from the reference implementation:</p>
+<ul>
+<li>The region is processed as one block, so the reference's merging of
+polygons cut by its processing regions and worker blocks is not
+needed. Small holes are filled and fields filtered on the raster, in a
+topological map where polygons cannot overlap.</li>
+<li>The network runs in fp32 on CPUs and, by default, with fp16 storage on
+GPUs (the reference uses fp16 on GPUs).</li>
+<li>Merging tiles is done in the reference's tile order on one thread, so
+the result does not depend on the scheduling of parallel workers.</li>
+<li>The additional background vector source and multi-model passes of the
+reference configuration are not supported.</li>
+</ul>
+<p>Delineate-Anything's code and weights are licensed under AGPL-3.0, and
+so is this module.</p>
+<h2>EXAMPLES</h2>
+<h3>Sentinel-2 true colour image</h3>
+<p>Delineate fields in a Sentinel-2 RGB composite at 10 m (the region is
+upsampled twice, fields delineated at 5 m):</p>
+<pre class="sh"><code>i.group group=s2_rgb input=B04,B03,B02
+g.region raster=B04 -p
+i.delineate.opencl group=s2_rgb output=fields
+v.db.univar fields column=area</code></pre>
+<h3>Land cover mask</h3>
+<p>With a land cover map whose classes 1 and 2 are water and forest, 3 is
+built-up land and 4 grassland, cut water and forest out of the fields,
+drop fields in built-up areas and add grassland where no field is
+found:</p>
+<pre class="sh"><code>i.delineate.opencl group=s2_rgb output=fields mask=landcover \
+    clip_classes=1,2 filter_classes=3 background_classes=4</code></pre>
+<h3>Fast preview on the CPU</h3>
+<pre class="sh"><code>i.delineate.opencl group=s2_rgb output=fields_quick model=small \
+    device=cpu --verbose</code></pre>
+<h2>REFERENCES</h2>
+<p>Lavreniuk, M., Kussul, N., Shelestov, A., Yailymov, B., Salii, Y.,
+Kuzin, V., Szantoi, Z., 2025. Delineate Anything: Resolution-Agnostic
+Field Boundary Delineation on Satellite Imagery. ECAI 2025.
+<a href="https://arxiv.org/abs/2504.02534">arXiv:2504.02534</a></p>
+<p>Lavreniuk, M., Kussul, N., Shelestov, A., Salii, Y., Kuzin, V.,
+Skakun, S., Szantoi, Z., 2025. Delineate Anything Flow: Fast,
+Country-Level Field Boundary Detection from Any Source.
+<a href="https://arxiv.org/abs/2511.13417">arXiv:2511.13417</a></p>
+<p>Source code and models: <a href="https://github.com/Lavreniuk/Delineate-Anything">https://github.com/Lavreniuk/Delineate-Anything</a></p>
+<h2>SEE ALSO</h2>
+<p><em><a href="i.group.html">i.group</a>, <a href="i.sam.opencl.html">i.sam.opencl</a>,
+<a href="i.segment.html">i.segment</a>, <a href="r.to.vect.html">r.to.vect</a>,
+<a href="v.clean.html">v.clean</a>, <a href="v.generalize.html">v.generalize</a></em></p>
+<h2>AUTHORS</h2>
+<p>Yann Chemin, port of Delineate-Anything by Mykola Lavreniuk et al.</p>
